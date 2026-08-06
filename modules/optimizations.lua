@@ -19,9 +19,9 @@ local LocalPlayer = Players.LocalPlayer
 -- Safely mutes/unmutes all sounds in the game workspace and SoundService
 local function setMuteState(should_mute)
     pcall(function()
-        -- Setting AmbientReverb is a safe backup, but we can directly adjust SoundService volume
         SoundService.MainVolume = should_mute and 0 or 1
     end)
+    
     -- Fallback: Loop through existing active game sounds
     pcall(function()
         for _, obj in ipairs(game:GetDescendants()) do
@@ -32,12 +32,11 @@ local function setMuteState(should_mute)
     end)
 end
 
--- Safely search and disable specific MM2 MainGUI elements recursively (No guessing)
+-- Safely search and disable specific MM2 MainGUI elements recursively
 local function safeHideFrame(guiName)
     pcall(function()
         local mainGui = LocalPlayer.PlayerGui:FindFirstChild("MainGUI")
         if mainGui then
-            -- Searches recursively for any frame matching the checked HUD name
             local frame = mainGui:FindFirstChild(guiName, true)
             if frame and frame:IsA("GuiObject") then
                 frame.Visible = false
@@ -50,10 +49,8 @@ end
 -- PUBLIC INTERFACE METHODS
 -- =============================================================================
 
+-- Toggles the master visibility of the entire screen interface (MainGUI).
 function Optimizations.toggleUI()
-    """
-    Toggles the master visibility of the entire screen interface (MainGUI).
-    """
     pcall(function()
         local mainGui = LocalPlayer.PlayerGui:FindFirstChild("MainGUI")
         if mainGui then
@@ -63,10 +60,8 @@ function Optimizations.toggleUI()
     end)
 end
 
+-- Applies incoming real-time optimization parameters from Python.
 function Optimizations.applySettings(settings)
-    """
-    Applies incoming real-time optimization parameters from Python.
-    """
     -- 1. Headless 3D Render Toggle (Reduces GPU usage to 0% when true)
     if settings.opt_headless ~= nil then
         pcall(function()
