@@ -1,6 +1,6 @@
 -- =============================================================================
 -- MM2CLIENTSCRIPT: Farming & Gameplay Module (farm.lua)
--- Features: Throttled Re-targeting, Proximity Touch, Stable Fling, Lobby Caching
+-- Features: Dynamic Lobby Gate, Late-Join Blinks, Throttled Re-targeting, Touch
 -- =============================================================================
 
 local Farm = {}
@@ -21,8 +21,6 @@ local SquadMembers = {} -- List of other bot usernames sent dynamically by Pytho
 
 -- Cooperative State Memory
 local BlacklistedCoins = setmetatable({}, { __mode = "k" }) -- Weak-keys prevent memory leaks
-local forceScatterPivot = false
-local scatterPivotSource = nil
 local CurrentCoins = 0
 local LastStatus = "Alive"
 local CurrentRoundPhase = "Lobby"
@@ -99,6 +97,17 @@ end
 local function isBagFull()
     local current, capacity = getExactBagCoinCount()
     return current >= capacity
+end
+
+-- =============================================================================
+-- DYNAMIC LOBBY SPATIAL DETECTOR
+-- =============================================================================
+local function isPlayerInLobby(hrp)
+    -- Measures distance to our captured bootup spawn coordinates.
+    -- If within 120 studs of our lobby spawn, we are physically in the lobby.
+    if not LobbyCFrame then return true end
+    local dist = (hrp.Position - LobbyCFrame.Position).Magnitude
+    return dist < 120
 end
 
 -- =============================================================================
@@ -288,7 +297,7 @@ function Farm.start()
                 continue
             end
 
-            -- Spawning/Lobby Teleport Fix
+            -- Lobby Teleportation upon Full Bag capacity
             local full = isBagFull()
             if full then
                 if CurrentTween then
@@ -305,15 +314,36 @@ function Farm.start()
                 continue
             end
 
-            setNoclip(true)
-            local platform = createFarmPlatform()
-            platform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
-
             local coins = getCoins()
+            
+            -- If no coins exist on the map, we are NOT in a round (Intermission/Lobby)
             if #coins == 0 then
+                if CurrentTween then
+                    pcall(function() CurrentTween:Cancel() CurrentTween:Destroy() end)
+                    CurrentTween = nil
+                end
+                destroyFarmPlatform()
+                setNoclip(false)
                 task.wait(0.5)
                 continue
             end
+
+            -- LATE-JOIN TELEPORTATION RECOVERY:
+            -- If coins exist on the map (round is active) but our bot is physically in the lobby,
+            -- instantly teleport (blink) them onto the map so they don't slowly fly across the skybox!
+            if isPlayerInLobby(hrp) then
+                print("[Farm] Active round detected while bot is in lobby. Teleporting onto map...")
+                pcall(function()
+                    -- Teleport safely above the first detected active coin
+                    hrp.CFrame = coins[1].CFrame + Vector3.new(0, 5, 0)
+                end)
+                task.wait(0.5) -- Allow physics and positions to register
+                continue
+            end
+
+            setNoclip(true)
+            local platform = createFarmPlatform()
+            platform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
 
             -- Locate nearest active coin
             local closestCoin = nil
@@ -358,7 +388,7 @@ function Farm.start()
                 local startTime = tick()
                 local nextRetargetCheck = tick() + 0.15 -- Run check at 6.6Hz to completely eliminate CPU spikes!
                 
-                while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and IsFarming do
+                while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and IsFarming and not isPlayerInLobby(hrp) do
                     if farmPlatform and farmPlatform.Parent then
                         farmPlatform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
                     end
