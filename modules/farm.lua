@@ -29,7 +29,6 @@ local forceScatter = false
 local farmPlatform = nil
 local cachedCoinContainer = nil
 local CurrentTween = nil
-local NoclipConnection = nil
 
 -- Made public so connection.lua can zero it on round resets
 Farm.CurrentCoins = 0
@@ -159,36 +158,17 @@ end
 -- PHYSICS PLATFORM & NOCLIP UTILITIES
 -- =============================================================================
 
-local function startNoclip()
-    if NoclipConnection then return end
-    NoclipConnection = RunService.Stepped:Connect(function()
+local function setNoclip(state)
+    task.spawn(function()
         local char = LocalPlayer.Character
         if char then
             for _, child in ipairs(char:GetDescendants()) do
                 if child:IsA("BasePart") then
-                    child.CanCollide = false
+                    child.CanCollide = not state
                 end
             end
         end
     end)
-end
-
-local function stopNoclip()
-    if NoclipConnection then
-        NoclipConnection:Disconnect()
-        NoclipConnection = nil
-    end
-    -- Reset standard collisions once on stop
-    local char = LocalPlayer.Character
-    if char then
-        for _, child in ipairs(char:GetDescendants()) do
-            if child:IsA("BasePart") then
-                if child.Name ~= "HumanoidRootPart" then
-                    child.CanCollide = true
-                end
-            end
-        end
-    end
 end
 
 local function createFarmPlatform()
@@ -276,7 +256,7 @@ function Farm.applySettings(settings)
                 CurrentTween = nil
             end
             destroyFarmPlatform()
-            stopNoclip()
+            setNoclip(false)
         end
     end
     if settings.tween_speed ~= nil then TweenSpeed = settings.tween_speed end
@@ -307,7 +287,7 @@ function Farm.fling(targetPlayerName)
 
             if mHRP.Position.Y < -20 then break end
 
-            startNoclip()
+            setNoclip(true)
             hum.PlatformStand = true
 
             if hrp.CustomPhysicalProperties ~= desiredPhysics then
@@ -357,15 +337,12 @@ function Farm.start()
                     CurrentTween = nil
                 end
                 destroyFarmPlatform()
-                stopNoclip()
-                if hum then hum.PlatformStand = false end
+                setNoclip(false)
                 task.wait(0.5)
                 continue
             end
 
-            -- Activate physics overrides for smooth farming
-            startNoclip()
-            hum.PlatformStand = true
+            -- Ensure local platform is built
             createFarmPlatform()
 
             -- Stop farming and teleport back to Spawn if bag is full
@@ -376,8 +353,7 @@ function Farm.start()
                     CurrentTween = nil
                 end
                 destroyFarmPlatform()
-                stopNoclip()
-                hum.PlatformStand = false
+                setNoclip(false)
                 
                 -- Teleport directly back to the Lobby Spawn part
                 teleportToLobby(hrp)
@@ -394,8 +370,7 @@ function Farm.start()
                     CurrentTween = nil
                 end
                 destroyFarmPlatform()
-                stopNoclip()
-                hum.PlatformStand = false
+                setNoclip(false)
                 task.wait(0.5)
                 continue
             end
@@ -468,6 +443,7 @@ function Farm.start()
             end
 
             if closestCoin then
+                setNoclip(true)
                 -- Offset Y value downwards rather than upwards
                 local targetCFrame = closestCoin.CFrame + Vector3.new(0, -math.abs(YOffset), 0)
                 local duration = (hrp.Position - targetCFrame.Position).Magnitude / math.clamp(TweenSpeed, 10, 100)
@@ -483,8 +459,8 @@ function Farm.start()
                 -- STABLE LINEAR PROGRESSION
                 while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and IsFarming and isPlayerInRound() and not isPlayerInLobby(hrp) do
                     if farmPlatform and farmPlatform.Parent then
-                        -- Kept globally level and flat to prevent camera wobble
-                        farmPlatform.CFrame = CFrame.new(hrp.Position + Vector3.new(0, -3.5, 0))
+                        -- Moved down to -4.5 to keep the platform safely beneath your feet and out of your body's collision box
+                        farmPlatform.CFrame = hrp.CFrame * CFrame.new(0, -4.5, 0)
                     end
 
                     local currentDist = (hrp.Position - closestCoin.Position).Magnitude
@@ -510,7 +486,7 @@ function Farm.start()
             end
         end
         destroyFarmPlatform()
-        stopNoclip()
+        setNoclip(false)
         activeFarmingLoop = false
     end)
 end
