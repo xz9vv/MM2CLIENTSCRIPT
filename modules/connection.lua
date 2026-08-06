@@ -27,7 +27,7 @@ local CurrentRoundPhase = "Lobby"
 -- 🗺️ MM2 WIKI MAP WHITELIST (Normalized to spaceless lowercase)
 -- =============================================================================
 local MapWhitelist = {
-    "bank2", "biolabsq", "biolab", "factory", "hospital3", "hospital3icon", 
+    "bank2", "hotel", "biolabsq", "biolab", "factory", "hospital3", "hospital3icon", 
     "hotel2", "house2", "mansion2", "milbase", "office3", "office3icon", 
     "policestation", "policestationicon", "research", "researchfacility", "workplace",
     "beachresort", "yacht", "yachtmap", "pier", "piermap", "manor", "farmhouse", 
