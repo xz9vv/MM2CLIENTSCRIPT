@@ -1,6 +1,6 @@
 -- =============================================================================
 -- MM2CLIENTSCRIPT: Farming & Gameplay Module (farm.lua)
--- Features: Active Round-Player Checks, Dynamic Lobby Gate, Instant Touch
+-- Features: Stable Retargeting, Proximity Touch, Lobby Gating, Void Flings
 -- =============================================================================
 
 local Farm = {}
@@ -110,12 +110,16 @@ local function isPlayerInLobby(hrp)
 end
 
 local function isPlayerInRound()
-    -- Evaluates if the local player is actively playing in the round.
-    -- In MM2, the 'Game' HUD frame is ONLY visible if you are playing.
+    -- Double-Guarded In-Game verification
     local playGui = LocalPlayer:FindFirstChild("PlayerGui")
     local mainGui = playGui and playGui:FindFirstChild("MainGUI")
     local gameFrame = mainGui and mainGui:FindFirstChild("Game")
+    
     if gameFrame then
+        local roleLabel = gameFrame:FindFirstChild("Role", true)
+        if roleLabel and roleLabel:IsA("TextLabel") then
+            return gameFrame.Visible == true and roleLabel.Text ~= ""
+        end
         return gameFrame.Visible == true
     end
     return false
@@ -281,7 +285,7 @@ function Farm.applySettings(settings)
 end
 
 -- =============================================================================
--- DYNAMIC AUTO-FARMING ENGINE (Re-targeting & Anti-trail)
+-- INTUITIVE RETARGET-SAFE FARMING ENGINE
 -- =============================================================================
 
 local activeFarmingLoop = false
@@ -297,8 +301,7 @@ function Farm.start()
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
 
-            -- Safety Gate: Only allow farming logic if we are actively playing in the round!
-            -- If we are spectating or dead, wait patiently.
+            -- Safety Gate: Only allow farming if we are actively playing inside the round
             if not hrp or not hum or hum.Health <= 0 or not isPlayerInRound() then
                 if CurrentTween then
                     pcall(function() CurrentTween:Cancel() CurrentTween:Destroy() end)
@@ -329,7 +332,7 @@ function Farm.start()
 
             local coins = getCoins()
             
-            -- If no coins exist on the map, we are NOT in a active farming round
+            -- If no coins exist on the map, we are NOT in an active round
             if #coins == 0 then
                 if CurrentTween then
                     pcall(function() CurrentTween:Cancel() CurrentTween:Destroy() end)
@@ -342,8 +345,6 @@ function Farm.start()
             end
 
             -- LATE-JOIN TELEPORTATION RECOVERY:
-            -- If we are in the lobby, but the game GUI says we are actively in-game (and coins exist),
-            -- instantly blink onto the map so we don't slowly fly across the skybox!
             if isPlayerInLobby(hrp) then
                 print("[Farm] Active round detected while bot is in lobby. Teleporting onto map...")
                 pcall(function()
@@ -398,7 +399,7 @@ function Farm.start()
                 CurrentTween:Play()
 
                 local startTime = tick()
-                local nextRetargetCheck = tick() + 0.15 -- Run check at 6.6Hz to completely eliminate CPU spikes!
+                local nextRetargetCheck = tick() + 0.15 -- Check every 0.15s to eliminate CPU spikes
                 
                 while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and IsFarming and not isPlayerInLobby(hrp) and isPlayerInRound() do
                     if farmPlatform and farmPlatform.Parent then
@@ -425,24 +426,44 @@ function Farm.start()
                     if now >= nextRetargetCheck then
                         nextRetargetCheck = now + 0.15 -- Throttle
                         
-                        local nearest_check_coins = getCoins()
-                        local possible_closer_coin = nil
-                        local possible_closer_dist = math.huge
-                        
-                        for _, c in ipairs(nearest_check_coins) do
-                            if c and c:IsA("BasePart") and c ~= closestCoin and c.Parent then
-                                local d = (hrp.Position - c.Position).Magnitude
-                                if d < possible_closer_dist then
-                                    possible_closer_dist = d
-                                    possible_closer_coin = c
+                        -- Proximity Lock-In Safeguard: If within 6 studs, lock in and finish the grab!
+                        if currentDist > 6 then
+                            local nearest_check_coins = getCoins()
+                            local possible_closer_coin = nil
+                            local possible_closer_dist = math.huge
+                            
+                            for _, c in ipairs(nearest_check_coins) do
+                                if c and c:IsA("BasePart") and c ~= closestCoin and c.Parent then
+                                    local blacklisted = BlacklistedCoins[c]
+                                    if not blacklisted or tick() >= blacklisted then
+                                        local d = (hrp.Position - c.Position).Magnitude
+                                        
+                                        -- Standard bot-trail check
+                                        local too_close_to_bot = false
+                                        for _, p in ipairs(Players:GetPlayers()) do
+                                            if p ~= LocalPlayer and table.find(SquadMembers, p.Name) and p.Character then
+                                                local bHRP = p.Character:FindFirstChild("HumanoidRootPart")
+                                                if bHRP and (bHRP.Position - c.Position).Magnitude < 8 then
+                                                    too_close_to_bot = true
+                                                    break
+                                                end
+                                            end
+                                        end
+                                        
+                                        if not too_close_to_bot and d < possible_closer_dist then
+                                            possible_closer_dist = d
+                                            possible_closer_coin = c
+                                        end
+                                    end
                                 end
                             end
-                        end
-                        
-                        -- Re-target if a newly found coin is significantly closer (e.g., spawned 5 studs closer)
-                        if possible_closer_coin and possible_closer_dist < currentDist - 5 then
-                            pcall(function() CurrentTween:Cancel() end)
-                            break
+                            
+                            -- Shortcut Commitment Safeguard: Only switch targets if a newly spawned 
+                            -- coin is at least 12 studs closer, completely eliminating jittering.
+                            if possible_closer_coin and possible_closer_dist < currentDist - 12 then
+                                pcall(function() CurrentTween:Cancel() end)
+                                break
+                            end
                         end
                     end
 
