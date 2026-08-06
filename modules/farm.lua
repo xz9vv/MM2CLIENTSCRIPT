@@ -342,6 +342,9 @@ function Farm.start()
                 continue
             end
 
+            -- Ensure local platform exists while farming in-round
+            createFarmPlatform()
+
             -- Stop farming and teleport back to Spawn if bag is full
             local full = isBagFull()
             if full then
@@ -440,7 +443,8 @@ function Farm.start()
             end
 
             if closestCoin then
-                local targetCFrame = closestCoin.CFrame + Vector3.new(0, YOffset, 0)
+                -- Offset Y value downwards rather than upwards
+                local targetCFrame = closestCoin.CFrame + Vector3.new(0, -math.abs(YOffset), 0)
                 local duration = (hrp.Position - targetCFrame.Position).Magnitude / math.clamp(TweenSpeed, 10, 100)
 
                 BlacklistedCoins[closestCoin] = tick() + duration + 1.5
@@ -454,20 +458,20 @@ function Farm.start()
                 -- STABLE LINEAR PROGRESSION
                 while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and IsFarming and isPlayerInRound() and not isPlayerInLobby(hrp) do
                     if farmPlatform and farmPlatform.Parent then
+                        -- Position platform exactly below character during tweening
                         farmPlatform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
                     end
 
                     local currentDist = (hrp.Position - closestCoin.Position).Magnitude
                     
-                    -- Instant Touch Proximity Check
-                    if currentDist <= 1.5 then
+                    -- Instant 5-Stud Touch Proximity & Touch Interest Spam
+                    if currentDist <= 5.0 then
                         pcall(function()
-                            CurrentTween:Cancel()
                             if firetouchinterest then
                                 firetouchinterest(hrp, closestCoin, 0)
-                                task.wait()
                                 firetouchinterest(hrp, closestCoin, 1)
                             end
+                            CurrentTween:Cancel()
                         end)
                         break
                     end
@@ -490,13 +494,16 @@ end
 -- BACKGROUND TELEMETRY LOOPS
 -- =============================================================================
 
--- 1. Real-Time Coin Bag Telemetry Loop
+-- 1. Real-Time Coin Bag Telemetry Loop (Decoupled & More Reliable)
+local lastSentFullBagState = false
 task.spawn(function()
     while true do
-        task.wait(0.2)
+        task.wait(0.5)
         pcall(function()
             local current, capacity = getExactBagCoinCount()
-            if current > CurrentCoins then
+            
+            -- Only send telemetry on visual change
+            if current ~= CurrentCoins then
                 CurrentCoins = current
                 if shared.Connection then
                     shared.Connection.send({
@@ -504,12 +511,19 @@ task.spawn(function()
                         ["coins"] = CurrentCoins,
                         ["target"] = 1000
                     })
-                    if CurrentCoins >= capacity then
-                        shared.Connection.send({
-                            ["event"] = "full_bag",
-                            ["bag_count"] = CurrentCoins
-                        })
-                    end
+                end
+            end
+
+            -- Reliably track and send bag full state transitions
+            local isFull = (current >= capacity and capacity > 0)
+            if isFull ~= lastSentFullBagState then
+                lastSentFullBagState = isFull
+                if isFull and shared.Connection then
+                    shared.Connection.send({
+                        ["event"] = "full_bag",
+                        ["bag_count"] = current
+                    })
+                    print("[Farm] Telemetry: Sent full_bag event to Python.")
                 end
             end
         end)
