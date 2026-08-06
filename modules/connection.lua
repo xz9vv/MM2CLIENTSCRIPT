@@ -1,12 +1,13 @@
 -- =============================================================================
 -- MM2CLIENTSCRIPT: Connection Module (connection.lua)
--- Manages WebSocket networking, auto-reconnect, and message routing.
+-- Manages WebSocket networking, auto-reconnect, and native error detectors.
 -- =============================================================================
 
 local Connection = {}
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
+local GuiService = game:GetService("GuiService")
 
 local LocalPlayer = Players.LocalPlayer
 local Username = LocalPlayer.Name
@@ -107,7 +108,6 @@ end
 
 local function runHeartbeatLoop()
     task.spawn(function()
-        -- Keeps sending heartbeat packets as long as the current socket remains connected
         while ActiveSocket do
             Connection.send({["event"] = "heartbeat"})
             task.wait(30)
@@ -164,5 +164,37 @@ function Connection.start()
         Connection.start()
     end)
 end
+
+-- =============================================================================
+-- NATIVE DISCONNECT & ERROR MONITOR (Error Code 267 Detector)
+-- =============================================================================
+pcall(function()
+    GuiService.ErrorMessageChanged:Connect(function()
+        task.wait(0.1) -- Wait for UI error text to fully render
+        
+        local errorMessage = GuiService:GetErrorMessage()
+        local errorCode = GuiService:GetErrorCode()
+        local errorCodeValue = errorCode and errorCode.Value or 0
+        
+        -- Detect Error 267, Error 268, or any explicit 'kick' keywords
+        if errorCodeValue == 267 or errorCodeValue == 268 or errorMessage:find("267") or errorMessage:lower():find("kick") then
+            print("[Connection] Disconnect detected! Message: " .. tostring(errorMessage))
+            
+            -- 1. Notify Python immediately so the Queue Manager knows we were kicked
+            Connection.send({
+                ["event"] = "status_changed",
+                ["status"] = "Kicked"
+            })
+            
+            task.wait(0.5)
+            
+            -- 2. Hard close the WebSocket so the server registers the disconnect cleanly
+            if ActiveSocket then
+                ActiveSocket:Close()
+                ActiveSocket = nil
+            end
+        end
+    end)
+end)
 
 return Connection
