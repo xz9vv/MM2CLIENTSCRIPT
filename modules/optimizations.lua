@@ -12,21 +12,46 @@ local SoundService = game:GetService("SoundService")
 
 local LocalPlayer = Players.LocalPlayer
 
+-- Local caching states to prevent redundant execution and eliminate FPS spikes
+local CurrentMuteState = nil
+local CurrentHeadlessState = nil
+local CurrentFPSCap = nil
+
 -- =============================================================================
 -- PRIVATE UTILITY METHODS
 -- =============================================================================
 
--- Safely mutes/unmutes all sounds in the game workspace and SoundService
+-- Safely mutes/unmutes game audio using a non-blocking threaded queue
 local function setMuteState(should_mute)
-    pcall(function()
-        SoundService.MainVolume = should_mute and 0 or 1
-    end)
-    
-    -- Fallback: Loop through existing active game sounds
-    pcall(function()
-        for _, obj in ipairs(game:GetDescendants()) do
-            if obj:IsA("Sound") then
-                obj.Volume = should_mute and 0 or (obj:GetAttribute("OriginalVolume") or obj.Volume)
+    task.spawn(function()
+        -- Try Executor MasterVolume bypass first (100% instant and lag-free)
+        local success = pcall(function()
+            UserSettings().GameSettings.MasterVolume = should_mute and 0 or 1
+        end)
+        if success then 
+            print("[Optimizations] Master volume bypass applied successfully.")
+            return 
+        end
+        
+        -- Fallback: Threaded non-blocking local muter
+        pcall(function()
+            SoundService.MainVolume = should_mute and 0 or 1
+        end)
+
+        local targets = {SoundService, workspace, Players}
+        local counter = 0
+        
+        for _, service in ipairs(targets) do
+            for _, obj in ipairs(service:GetDescendants()) do
+                if obj:IsA("Sound") then
+                    obj.Volume = should_mute and 0 or (obj:GetAttribute("OriginalVolume") or obj.Volume)
+                end
+                
+                counter = counter + 1
+                -- Yield every 100 sounds to spread CPU load across frames and prevent FPS freezing
+                if counter % 100 == 0 then
+                    task.wait()
+                end
             end
         end
     end)
@@ -62,28 +87,31 @@ end
 
 -- Applies incoming real-time optimization parameters from Python.
 function Optimizations.applySettings(settings)
-    -- 1. Headless 3D Render Toggle (Reduces GPU usage to 0% when true)
-    if settings.opt_headless ~= nil then
+    -- 1. Headless 3D Render Toggle (Reduces GPU usage to 0%)
+    if settings.opt_headless ~= nil and settings.opt_headless ~= CurrentHeadlessState then
+        CurrentHeadlessState = settings.opt_headless
         pcall(function()
-            RunService:Set3dRenderingEnabled(not settings.opt_headless)
-            print("[Optimizations] Headless mode set to: " .. tostring(settings.opt_headless))
+            RunService:Set3dRenderingEnabled(not CurrentHeadlessState)
+            print("[Optimizations] Headless mode set to: " .. tostring(CurrentHeadlessState))
         end)
     end
 
     -- 2. Master FPS Cap Adjustment
-    if settings.opt_fps_cap ~= nil then
+    if settings.opt_fps_cap ~= nil and settings.opt_fps_cap ~= CurrentFPSCap then
+        CurrentFPSCap = settings.opt_fps_cap
         pcall(function()
             if setfpscap then
-                setfpscap(settings.opt_fps_cap)
-                print("[Optimizations] FPS capped at: " .. tostring(settings.opt_fps_cap))
+                setfpscap(CurrentFPSCap)
+                print("[Optimizations] FPS capped at: " .. tostring(CurrentFPSCap))
             end
         end)
     end
 
-    -- 3. Game Mute State
-    if settings.opt_mute ~= nil then
-        setMuteState(settings.opt_mute)
-        print("[Optimizations] Audio mute state: " .. tostring(settings.opt_mute))
+    -- 3. Game Mute State (State Cached: Prevents double-scans on other slider movements)
+    if settings.opt_mute ~= nil and settings.opt_mute ~= CurrentMuteState then
+        CurrentMuteState = settings.opt_mute
+        setMuteState(CurrentMuteState)
+        print("[Optimizations] Audio mute state: " .. tostring(CurrentMuteState))
     end
 
     -- 4. Dynamic HUD Deletions & Purges
@@ -113,11 +141,16 @@ end
 function Optimizations.init()
     print("[Optimizations] Module loaded successfully.")
     
-    -- Cache original sound volumes at start so we can unmute accurately
-    pcall(function()
+    -- Threaded startup caching: prevents freezing the client during initial injection
+    task.spawn(function()
+        local counter = 0
         for _, obj in ipairs(game:GetDescendants()) do
             if obj:IsA("Sound") and not obj:GetAttribute("OriginalVolume") then
                 obj:SetAttribute("OriginalVolume", obj.Volume)
+            end
+            counter = counter + 1
+            if counter % 150 == 0 then
+                task.wait()
             end
         end
     end)
