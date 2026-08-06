@@ -356,7 +356,7 @@ function Farm.start()
                 destroyFarmPlatform()
                 setNoclip(false)
                 
-                # Teleport directly back to the Lobby Spawn part
+                -- Teleport directly back to the Lobby Spawn part
                 teleportToLobby(hrp)
                 task.wait(1)
                 continue
