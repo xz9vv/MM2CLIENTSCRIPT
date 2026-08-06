@@ -12,7 +12,7 @@ local LocalPlayer = Players.LocalPlayer
 local Username = LocalPlayer.Name
 
 -- Configuration
-local WS_URL = "ws://localhost:8765"
+local WS_URL = "ws://127.0.0.1:8765" -- Bypasses localhost DNS resolving for speed
 local RECONNECT_DELAY = 5
 
 -- Local State
@@ -37,9 +37,7 @@ local WSLib = getWebSocketLibrary()
 -- =============================================================================
 
 function Connection.send(payload)
-    """
-    Appends the local username and sends a JSON payload up to Python thread-safely.
-    """
+    -- Appends the local username and sends a JSON payload up to Python thread-safely.
     if ActiveSocket then
         payload["username"] = Username
         local success, jsonStr = pcall(function()
@@ -147,11 +145,6 @@ function Connection.start()
 
     -- 3. Bind WebSocket Event Listeners
     ActiveSocket.OnMessage:Connect(function(rawMessage)
-        local successDec, decoded = pcall(function()
-            return HttpService:JSONEncode(rawMessage) -- Handled inside router
-        end)
-        
-        -- Decodes the JSON raw message and passes it to the command router
         local decodedPayload = nil
         pcall(function()
             decodedPayload = HttpService:JSONDecode(rawMessage)
