@@ -1,6 +1,6 @@
 -- =============================================================================
 -- MM2CLIENTSCRIPT: Farming & Gameplay Module (farm.lua)
--- Features: Workspace Map Detector, Backpack Role Scanner, Platform, Fluid Touch
+-- Features: Stable Linear Tweens, 20-Stud Anti-Trail, Touch Interest, Lobby Spawns
 -- =============================================================================
 
 local Farm = {}
@@ -17,14 +17,11 @@ local Username = LocalPlayer.Name
 local IsFarming = false
 local TweenSpeed = 30
 local YOffset = 1.5
-local SquadMembers = {} -- List of other bot usernames sent dynamically by Python
+local SquadMembers = {}
 
 -- Cooperative State Memory
-local BlacklistedCoins = setmetatable({}, { __mode = "k" }) -- Weak-keys prevent memory leaks
-local CurrentCoins = 0
+local BlacklistedCoins = setmetatable({}, { __mode = "k" })
 local LastStatus = "Alive"
-local CurrentRoundPhase = "Lobby"
-local CurrentAssignedRole = "Innocent"
 
 -- Local Anti-Trail & Physics Trackers
 local TailgateTimer = 0
@@ -33,8 +30,11 @@ local farmPlatform = nil
 local cachedCoinContainer = nil
 local CurrentTween = nil
 
+-- Made public so connection.lua can zero it on round resets
+Farm.CurrentCoins = 0
+
 -- =============================================================================
--- WORKSPACE PATHFINDING COIN SCANNER (Your Caching Method)
+-- WORKSPACE PATHFINDING COIN SCANNER
 -- =============================================================================
 
 local function findCoinContainer()
@@ -57,7 +57,7 @@ local function getCoins()
 end
 
 -- =============================================================================
--- YOUR VERIFIED DARK DEX PATHWAY (Coin Bag UI Reader with 40/50 Fallbacks)
+-- COIN BAG UI SENSOR (Your Caching Method)
 -- =============================================================================
 local function getExactBagCoinCount()
     local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
@@ -102,43 +102,8 @@ local function isBagFull()
 end
 
 -- =============================================================================
--- NATIVE LOBBY MAP DETECTOR (Workspace-Driven - Zero Guessing)
+-- DYNAMIC LOBBY & IN-ROUND SPATIAL DETECTORS
 -- =============================================================================
-
-local function getActiveMapModel()
-    -- Scrapes the Workspace for custom loaded MM2 game maps cleanly
-    local ignoreList = {
-        "Lobby", "Terrain", "LocalFarmPlatform", "Baseplate", 
-        "Camera", "CurrentCamera", "DefaultBaseplate"
-    }
-    for _, child in ipairs(Workspace:GetChildren()) do
-        if child:IsA("Model") and not table.find(ignoreList, child.Name) then
-            -- Exclude active character models of other players
-            if not Players:GetPlayerFromCharacter(child) then
-                return child
-            end
-        end
-    end
-    return nil
-end
-
-local function isPlayerInLobby(hrp)
-    -- Measures distance to the Lobby model in workspace
-    local lobby = Workspace:FindFirstChild("Lobby")
-    if lobby then
-        local spawnPart = lobby:FindFirstChild("Spawn", true) or lobby:FindFirstChild("SpawnLocation", true)
-        if spawnPart and spawnPart:IsA("BasePart") then
-            local dist = (hrp.Position - spawnPart.Position).Magnitude
-            return dist < 120
-        end
-    end
-    return true
-end
-
-local function isPlayerInRound()
-    -- Completely driven by your active Map model's physical existence in Workspace
-    return getActiveMapModel() ~= nil
-end
 
 local function teleportToLobby(hrp)
     local lobby = Workspace:FindFirstChild("Lobby")
@@ -151,12 +116,39 @@ local function teleportToLobby(hrp)
             hrp.CFrame = spawnPart.CFrame + Vector3.new(0, 3, 0)
             return true
         end
-        if lobby:IsA("Model") and lobby.PrimaryPart then
-            hrp.CFrame = lobby.PrimaryPart.CFrame + Vector3.new(0, 3, 0)
-            return true
-        elseif lobby:IsA("BasePart") then
-            hrp.CFrame = lobby.CFrame + Vector3.new(0, 3, 0)
-            return true
+    end
+    return false
+end
+
+local function isPlayerInLobby(hrp)
+    local lobby = Workspace:FindFirstChild("Lobby")
+    if lobby then
+        local spawnPart = lobby:FindFirstChild("Spawn", true) or lobby:FindFirstChild("SpawnLocation", true)
+        if spawnPart and spawnPart:IsA("BasePart") then
+            local dist = (hrp.Position - spawnPart.Position).Magnitude
+            return dist < 120
+        end
+    end
+    return true
+end
+
+local function isPlayerInRound()
+    -- True indicator: Active map exists in Workspace
+    local MapWhitelist = {
+        "bank2", "biolabsq", "biolab", "factory", "hospital3", "hospital3icon", 
+        "hotel2", "house2", "mansion2", "milbase", "office3", "office3icon", 
+        "policestation", "policestationicon", "research", "researchfacility", "workplace",
+        "beachresort", "yacht", "yachtmap", "pier", "piermap", "manor", "farmhouse", 
+        "mineshaft", "mineshaft2icon", "hallow2022barn", "barn", "vampirescastle", 
+        "vampcastle2", "spaceship", "spaceshipmap", "workshop", "workshopmapicon", 
+        "logcabin", "trainstation", "icecastle", "skilodge", "christmasinitaly", "xmasitaly", "skivillage"
+    }
+    for _, child in ipairs(Workspace:GetChildren()) do
+        if child:IsA("Model") then
+            local cleanName = child.Name:gsub("%s+", ""):lower()
+            if table.find(MapWhitelist, cleanName) then
+                return true
+            end
         end
     end
     return false
@@ -204,7 +196,7 @@ local function destroyFarmPlatform()
 end
 
 -- =============================================================================
--- WEAPON & ROLE DETECTORS (Using Backpack weapon-name scanning)
+-- WEAPON & ROLE DETECTORS
 -- =============================================================================
 
 local function isMurdererWeapon(tool)
@@ -215,15 +207,6 @@ local function isMurdererWeapon(tool)
         return true
     end
     if tool:FindFirstChild("KnifeServer") or tool:FindFirstChild("KnifeClient") then
-        return true
-    end
-    return false
-end
-
-local function isSheriffWeapon(tool)
-    if not tool or not tool:IsA("Tool") then return false end
-    local nameLower = tool.Name:lower()
-    if nameLower:find("gun", 1, true) or nameLower:find("revolver", 1, true) or nameLower:find("pistol", 1, true) then
         return true
     end
     return false
@@ -281,8 +264,8 @@ function Farm.applySettings(settings)
     if settings.squad_members ~= nil then SquadMembers = settings.squad_members end
 end
 
-function Farm.fling()
-    local targetPlayer = getPublicMurderer()
+function Farm.fling(targetPlayerName)
+    local targetPlayer = Players:FindFirstChild(targetPlayerName) or getPublicMurderer()
     if not targetPlayer then return end
 
     task.spawn(function()
@@ -553,98 +536,6 @@ task.spawn(function()
                         ["event"] = "status_changed",
                         ["status"] = LastStatus
                     })
-                end
-            end
-        end)
-    end
-end)
-
--- 3. Backpack Weapon-Based Role Scanner Loop (Instant Updates!)
-task.spawn(function()
-    while true do
-        task.wait(1.5) -- Scan every 1.5 seconds to prevent overhead
-        pcall(function()
-            if isPlayerInRound() then
-                local detectedRole = "Innocent"
-                
-                -- Check character for equipped weapons first
-                local char = LocalPlayer.Character
-                local equipped = char and char:FindFirstChildOfClass("Tool")
-                
-                if equipped then
-                    if isMurdererWeapon(equipped) then
-                        detectedRole = "Murderer"
-                    elseif isSheriffWeapon(equipped) then
-                        detectedRole = "Sheriff"
-                    end
-                end
-                
-                -- If not equipped, scan Backpack contents
-                if detectedRole == "Innocent" then
-                    local backpack = LocalPlayer:FindFirstChild("Backpack")
-                    if backpack then
-                        for _, item in ipairs(backpack:GetChildren()) do
-                            if isMurdererWeapon(item) then
-                                detectedRole = "Murderer"
-                                break
-                            elseif isSheriffWeapon(item) then
-                                detectedRole = "Sheriff"
-                                break
-                            end
-                        end
-                    end
-                end
-                
-                -- Update Python immediately if role changed
-                if detectedRole ~= CurrentAssignedRole then
-                    CurrentAssignedRole = detectedRole
-                    if shared.Connection then
-                        shared.Connection.send({
-                            ["event"] = "role_assigned",
-                            ["role"] = CurrentAssignedRole
-                        })
-                    end
-                end
-            else
-                -- If not in active round, reset role local state
-                CurrentAssignedRole = "Innocent"
-            end
-        end)
-    end
-end)
-
--- 4. Dynamic Workspace-Driven Map/Round State Detector
-task.spawn(function()
-    local lastPhase = ""
-    while true do
-        task.wait(1)
-        pcall(function()
-            local activeMap = getActiveMapModel()
-            local phase = "Lobby"
-            local mapName = "Voting"
-            
-            if activeMap then
-                phase = "InGame"
-                mapName = activeMap.Name
-            end
-            
-            if phase ~= lastPhase then
-                lastPhase = phase
-                CurrentRoundPhase = phase
-                
-                if shared.Connection then
-                    shared.Connection.send({
-                        ["event"] = "round_state_changed",
-                        ["phase"] = phase,
-                        ["map"] = mapName
-                    })
-                end
-                
-                if phase == "Lobby" then
-                    CurrentCoins = 0
-                    if shared.Connection then
-                        shared.Connection.send({["event"] = "round_ended"})
-                    end
                 end
             end
         end)
