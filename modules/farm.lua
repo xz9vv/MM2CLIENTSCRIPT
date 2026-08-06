@@ -1,6 +1,6 @@
 -- =============================================================================
 -- MM2CLIENTSCRIPT: Farming & Gameplay Module (farm.lua)
--- Features: Stable Retargeting, Proximity Touch, Lobby Gating, Void Flings
+-- Features: Stable Linear Tweens, 20-Stud Anti-Trail, Touch Interest, UI Gates
 -- =============================================================================
 
 local Farm = {}
@@ -26,7 +26,6 @@ local LastStatus = "Alive"
 local CurrentRoundPhase = "Lobby"
 
 -- Caching Positions and Anchors
-local LobbyCFrame = nil -- Captured instantly on bootup so we can teleport back to lobby safely
 local farmPlatform = nil
 local cachedCoinContainer = nil
 local CurrentTween = nil
@@ -100,15 +99,8 @@ local function isBagFull()
 end
 
 -- =============================================================================
--- DYNAMIC LOBBY & IN-ROUND SPATIAL DETECTORS
+-- DYNAMIC IN-ROUND SPATIAL DETECTORS
 -- =============================================================================
-local function isPlayerInLobby(hrp)
-    -- Measures distance to our captured bootup spawn coordinates.
-    if not LobbyCFrame then return true end
-    local dist = (hrp.Position - LobbyCFrame.Position).Magnitude
-    return dist < 120
-end
-
 local function isPlayerInRound()
     -- Double-Guarded In-Game verification
     local playGui = LocalPlayer:FindFirstChild("PlayerGui")
@@ -285,7 +277,7 @@ function Farm.applySettings(settings)
 end
 
 -- =============================================================================
--- INTUITIVE RETARGET-SAFE FARMING ENGINE
+-- STABLE LINEAR AUTO-FARMING ENGINE (One-Tween-At-A-Time)
 -- =============================================================================
 
 local activeFarmingLoop = false
@@ -301,7 +293,7 @@ function Farm.start()
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
 
-            -- Safety Gate: Only allow farming if we are actively playing inside the round
+            -- Safety Gate: Only allow farming if we are alive and actively playing the round
             if not hrp or not hum or hum.Health <= 0 or not isPlayerInRound() then
                 if CurrentTween then
                     pcall(function() CurrentTween:Cancel() CurrentTween:Destroy() end)
@@ -313,7 +305,7 @@ function Farm.start()
                 continue
             end
 
-            -- Lobby Teleportation upon Full Bag capacity
+            -- Stop farming cleanly upon reaching capacity (No teleportation, just wait)
             local full = isBagFull()
             if full then
                 if CurrentTween then
@@ -322,13 +314,13 @@ function Farm.start()
                 end
                 destroyFarmPlatform()
                 setNoclip(false)
-                
-                if LobbyCFrame then
-                    hrp.CFrame = LobbyCFrame
-                end
                 task.wait(1)
                 continue
             end
+
+            setNoclip(true)
+            local platform = createFarmPlatform()
+            platform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
 
             local coins = getCoins()
             
@@ -344,20 +336,6 @@ function Farm.start()
                 continue
             end
 
-            -- LATE-JOIN TELEPORTATION RECOVERY:
-            if isPlayerInLobby(hrp) then
-                print("[Farm] Active round detected while bot is in lobby. Teleporting onto map...")
-                pcall(function()
-                    hrp.CFrame = coins[1].CFrame + Vector3.new(0, 5, 0)
-                end)
-                task.wait(0.5)
-                continue
-            end
-
-            setNoclip(true)
-            local platform = createFarmPlatform()
-            platform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
-
             -- Locate nearest active coin
             local closestCoin = nil
             local minDistance = math.huge
@@ -368,12 +346,12 @@ function Farm.start()
                     if not blacklisted or tick() >= blacklisted then
                         local dist = (hrp.Position - coin.Position).Magnitude
                         
-                        -- Anti-trail/Scatter checking: Is another squad member targeting this coin?
+                        -- Anti-trail/Scatter checking: Ignore coin if another squad member is within 20 studs of it
                         local too_close_to_bot = false
                         for _, p in ipairs(Players:GetPlayers()) do
                             if p ~= LocalPlayer and table.find(SquadMembers, p.Name) and p.Character then
                                 local bHRP = p.Character:FindFirstChild("HumanoidRootPart")
-                                if bHRP and (bHRP.Position - coin.Position).Magnitude < 8 then
+                                if bHRP and (bHRP.Position - coin.Position).Magnitude < 20 then -- 20-Stud Gate
                                     too_close_to_bot = true
                                     break
                                 end
@@ -399,16 +377,16 @@ function Farm.start()
                 CurrentTween:Play()
 
                 local startTime = tick()
-                local nextRetargetCheck = tick() + 0.15 -- Check every 0.15s to eliminate CPU spikes
                 
-                while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and IsFarming and not isPlayerInLobby(hrp) and isPlayerInRound() do
+                -- STABLE LINEAR PROGRESSION: Locks onto the target and moves in a single, smooth line.
+                while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and IsFarming and isPlayerInRound() do
                     if farmPlatform and farmPlatform.Parent then
                         farmPlatform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
                     end
 
                     local currentDist = (hrp.Position - closestCoin.Position).Magnitude
                     
-                    -- Instant Touch Proximity Check
+                    -- Instant Touch Proximity Check (1.5 studs)
                     if currentDist <= 1.5 then
                         pcall(function()
                             CurrentTween:Cancel()
@@ -420,53 +398,6 @@ function Farm.start()
                         end)
                         break
                     end
-                    
-                    -- Throttled Dynamic Re-targeting Check
-                    local now = tick()
-                    if now >= nextRetargetCheck then
-                        nextRetargetCheck = now + 0.15 -- Throttle
-                        
-                        -- Proximity Lock-In Safeguard: If within 6 studs, lock in and finish the grab!
-                        if currentDist > 6 then
-                            local nearest_check_coins = getCoins()
-                            local possible_closer_coin = nil
-                            local possible_closer_dist = math.huge
-                            
-                            for _, c in ipairs(nearest_check_coins) do
-                                if c and c:IsA("BasePart") and c ~= closestCoin and c.Parent then
-                                    local blacklisted = BlacklistedCoins[c]
-                                    if not blacklisted or tick() >= blacklisted then
-                                        local d = (hrp.Position - c.Position).Magnitude
-                                        
-                                        -- Standard bot-trail check
-                                        local too_close_to_bot = false
-                                        for _, p in ipairs(Players:GetPlayers()) do
-                                            if p ~= LocalPlayer and table.find(SquadMembers, p.Name) and p.Character then
-                                                local bHRP = p.Character:FindFirstChild("HumanoidRootPart")
-                                                if bHRP and (bHRP.Position - c.Position).Magnitude < 8 then
-                                                    too_close_to_bot = true
-                                                    break
-                                                end
-                                            end
-                                        end
-                                        
-                                        if not too_close_to_bot and d < possible_closer_dist then
-                                            possible_closer_dist = d
-                                            possible_closer_coin = c
-                                        end
-                                    end
-                                end
-                            end
-                            
-                            -- Shortcut Commitment Safeguard: Only switch targets if a newly spawned 
-                            -- coin is at least 12 studs closer, completely eliminating jittering.
-                            if possible_closer_coin and possible_closer_dist < currentDist - 12 then
-                                pcall(function() CurrentTween:Cancel() end)
-                                break
-                            end
-                        end
-                    end
-
                     RunService.Heartbeat:Wait()
                 end
                 
@@ -588,18 +519,6 @@ task.spawn(function()
             end
         end)
     end
-end)
-
--- Capture Lobby Spawning Coordinates on Initial Bootup (Guarantees zero-guess teleportation)
-task.spawn(function()
-    pcall(function()
-        local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-        local hrp = char:WaitForChild("HumanoidRootPart", 10)
-        if hrp then
-            LobbyCFrame = hrp.CFrame
-            print("[Farm] Lobby Spawning Coordinates successfully cached in memory.")
-        end
-    end)
 end)
 
 return Farm
