@@ -1,6 +1,6 @@
 -- =============================================================================
 -- MM2CLIENTSCRIPT: Farming & Gameplay Module (farm.lua)
--- Manages smooth tweening, noclip, anti-trail, instant touch, and void flings.
+-- Features: Throttled Re-targeting, Proximity Touch, Stable Fling, Lobby Caching
 -- =============================================================================
 
 local Farm = {}
@@ -9,6 +9,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -16,6 +17,7 @@ local LocalPlayer = Players.LocalPlayer
 local IsFarming = false
 local TweenSpeed = 30
 local YOffset = 1.5
+local SquadMembers = {} -- List of other bot usernames sent dynamically by Python
 
 -- Cooperative State Memory
 local BlacklistedCoins = setmetatable({}, { __mode = "k" }) -- Weak-keys prevent memory leaks
@@ -25,20 +27,20 @@ local CurrentCoins = 0
 local LastStatus = "Alive"
 local CurrentRoundPhase = "Lobby"
 
--- Platform, Tween, & Container Caches
+-- Caching Positions and Anchors
+local LobbyCFrame = nil -- Captured instantly on bootup so we can teleport back to lobby safely
 local farmPlatform = nil
 local cachedCoinContainer = nil
 local CurrentTween = nil
 
 -- =============================================================================
--- WORKSPACE PATHFINDING COIN SCANNER
+-- WORKSPACE PATHFINDING COIN SCANNER (Your Caching Method)
 -- =============================================================================
 
 local function findCoinContainer()
     if cachedCoinContainer and cachedCoinContainer.Parent then
         return cachedCoinContainer
     end
-    -- Dynamically locate MM2's active map coin folder
     local container = Workspace:FindFirstChild("CoinContainer", true) or Workspace:FindFirstChild("Coin_Container", true)
     if container then
         cachedCoinContainer = container
@@ -55,7 +57,7 @@ local function getCoins()
 end
 
 -- =============================================================================
--- YOUR VERIFIED DARK DEX PATHWAY (Coin Bag UI Reader)
+-- YOUR VERIFIED DARK DEX PATHWAY (Coin Bag UI Reader with 40/50 Fallbacks)
 -- =============================================================================
 local function getExactBagCoinCount()
     local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
@@ -81,7 +83,7 @@ local function getExactBagCoinCount()
                                             return tonumber(current), tonumber(capacity)
                                         end
                                         local num = tonumber(coinsLabel.Text:match("%d+"))
-                                        if num then return num, 10 end
+                                        if num then return num, 40 end
                                     end
                                 end
                             end
@@ -91,7 +93,7 @@ local function getExactBagCoinCount()
             end
         end
     end
-    return 0, 10
+    return 0, 40
 end
 
 local function isBagFull()
@@ -141,7 +143,7 @@ local function destroyFarmPlatform()
 end
 
 -- =============================================================================
--- FOOLPROOF WEAPON & ROLE DETECTOR
+-- WEAPON & ROLE DETECTORS (Using Backpack weapon-name scanning)
 -- =============================================================================
 
 local function isMurdererWeapon(tool)
@@ -198,7 +200,7 @@ function Farm.fling()
         local desiredPhysics = PhysicalProperties.new(100, 0.3, 0.5)
         local active = true
 
-        while active do
+        while active and IsFarming do
             local char = LocalPlayer.Character
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -220,10 +222,10 @@ function Farm.fling()
                 hrp.CustomPhysicalProperties = desiredPhysics
             end
 
-            hrp.AssemblyAngularVelocity = Vector3.new(0, 999999, 0)
-            hrp.AssemblyLinearVelocity = Vector3.new(0, -2500, 0)
+            hrp.AssemblyAngularVelocity = Vector3.new(0, 150, 0)
+            hrp.AssemblyLinearVelocity = Vector3.new(0, -100, 0)
 
-            hrp.CFrame = mHRP.CFrame * CFrame.new(math.random(-50, 50)/100, 2.5, math.random(-50, 50)/100)
+            hrp.CFrame = mHRP.CFrame * CFrame.new(math.random(-25, 25)/100, 2.0, math.random(-25, 25)/100)
             
             RunService.Heartbeat:Wait()
         end
@@ -245,12 +247,8 @@ function Farm.applySettings(settings)
         if IsFarming then
             Farm.start()
         else
-            -- Cleanly abort any active tweens immediately if farm is toggled off
             if CurrentTween then
-                pcall(function() 
-                    CurrentTween:Cancel() 
-                    CurrentTween:Destroy() 
-                end)
+                pcall(function() CurrentTween:Cancel() CurrentTween:Destroy() end)
                 CurrentTween = nil
             end
             destroyFarmPlatform()
@@ -259,10 +257,11 @@ function Farm.applySettings(settings)
     end
     if settings.tween_speed ~= nil then TweenSpeed = settings.tween_speed end
     if settings.offset ~= nil then YOffset = settings.offset end
+    if settings.squad_members ~= nil then SquadMembers = settings.squad_members end
 end
 
 -- =============================================================================
--- SMOOTH AUTO-FARMING LOOPS
+-- DYNAMIC AUTO-FARMING ENGINE (Re-targeting & Anti-trail)
 -- =============================================================================
 
 local activeFarmingLoop = false
@@ -289,7 +288,7 @@ function Farm.start()
                 continue
             end
 
-            -- Stop and exit back to lobby if the bag is full
+            -- Spawning/Lobby Teleport Fix
             local full = isBagFull()
             if full then
                 if CurrentTween then
@@ -298,9 +297,9 @@ function Farm.start()
                 end
                 destroyFarmPlatform()
                 setNoclip(false)
-                local lobbySpawn = Workspace:FindFirstChild("Lobby") and Workspace.Lobby:FindFirstChild("Spawn")
-                if lobbySpawn then
-                    hrp.CFrame = lobbySpawn.CFrame + Vector3.new(0, 3, 0)
+                
+                if LobbyCFrame then
+                    hrp.CFrame = LobbyCFrame
                 end
                 task.wait(1)
                 continue
@@ -325,7 +324,20 @@ function Farm.start()
                     local blacklisted = BlacklistedCoins[coin]
                     if not blacklisted or tick() >= blacklisted then
                         local dist = (hrp.Position - coin.Position).Magnitude
-                        if dist < minDistance then
+                        
+                        -- Anti-trail/Scatter checking: Is another squad member targeting this coin?
+                        local too_close_to_bot = false
+                        for _, p in ipairs(Players:GetPlayers()) do
+                            if p ~= LocalPlayer and table.find(SquadMembers, p.Name) and p.Character then
+                                local bHRP = p.Character:FindFirstChild("HumanoidRootPart")
+                                if bHRP and (bHRP.Position - coin.Position).Magnitude < 8 then
+                                    too_close_to_bot = true
+                                    break
+                                end
+                            end
+                        end
+                        
+                        if not too_close_to_bot and dist < minDistance then
                             minDistance = dist
                             closestCoin = coin
                         end
@@ -344,13 +356,16 @@ function Farm.start()
                 CurrentTween:Play()
 
                 local startTime = tick()
+                local nextRetargetCheck = tick() + 0.15 -- Run check at 6.6Hz to completely eliminate CPU spikes!
+                
                 while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and IsFarming do
                     if farmPlatform and farmPlatform.Parent then
                         farmPlatform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
                     end
 
-                    -- Proximity check for instant touch collection
                     local currentDist = (hrp.Position - closestCoin.Position).Magnitude
+                    
+                    -- Instant Touch Proximity Check
                     if currentDist <= 1.5 then
                         pcall(function()
                             CurrentTween:Cancel()
@@ -362,6 +377,33 @@ function Farm.start()
                         end)
                         break
                     end
+                    
+                    -- Throttled Dynamic Re-targeting Check
+                    local now = tick()
+                    if now >= nextRetargetCheck then
+                        nextRetargetCheck = now + 0.15 -- Throttle
+                        
+                        local nearest_check_coins = getCoins()
+                        local possible_closer_coin = nil
+                        local possible_closer_dist = math.huge
+                        
+                        for _, c in ipairs(nearest_check_coins) do
+                            if c and c:IsA("BasePart") and c ~= closestCoin and c.Parent then
+                                local d = (hrp.Position - c.Position).Magnitude
+                                if d < possible_closer_dist then
+                                    possible_closer_dist = d
+                                    possible_closer_coin = c
+                                end
+                            end
+                        end
+                        
+                        -- Re-target if a newly found coin is significantly closer (e.g., spawned 5 studs closer)
+                        if possible_closer_coin and possible_closer_dist < currentDist - 5 then
+                            pcall(function() CurrentTween:Cancel() end)
+                            break
+                        end
+                    end
+
                     RunService.Heartbeat:Wait()
                 end
                 
@@ -410,11 +452,15 @@ end)
 -- 2. Character Death Status Change Tracker
 task.spawn(function()
     while true do
-        task.wait(1)
+        task.wait(0.5)
         pcall(function()
             local char = LocalPlayer.Character
             local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-            local status = (humanoid and humanoid.Health > 0) and "Alive" or "Dead"
+            local status = "Dead"
+            
+            if humanoid and humanoid.Health > 0 then
+                status = "Alive"
+            end
             
             if status ~= LastStatus then
                 LastStatus = status
@@ -435,11 +481,12 @@ task.spawn(function()
     while true do
         task.wait(1)
         pcall(function()
-            local timerValue = ReplicatedStorage:FindFirstChild("Timer")
-            local statusValue = ReplicatedStorage:FindFirstChild("Status")
+            local playGui = LocalPlayer.PlayerGui:FindFirstChild("MainGUI")
+            local lobbyFrame = playGui and playGui:FindFirstChild("Lobby")
+            local statusLabel = lobbyFrame and lobbyFrame:FindFirstChild("Timer")
             
-            if statusValue then
-                local currentText = statusValue.Value
+            if statusLabel then
+                local currentText = statusLabel.Text
                 local phase = "InGame"
                 local mapName = "Unknown"
                 
@@ -478,6 +525,18 @@ task.spawn(function()
             end
         end)
     end
+end)
+
+-- Capture Lobby Spawning Coordinates on Initial Bootup (Guarantees zero-guess teleportation)
+task.spawn(function()
+    pcall(function()
+        local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+        local hrp = char:WaitForChild("HumanoidRootPart", 10)
+        if hrp then
+            LobbyCFrame = hrp.CFrame
+            print("[Farm] Lobby Spawning Coordinates successfully cached in memory.")
+        end
+    end)
 end)
 
 return Farm
