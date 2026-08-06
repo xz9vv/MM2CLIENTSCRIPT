@@ -1,6 +1,6 @@
 -- =============================================================================
 -- MM2CLIENTSCRIPT: Farming & Gameplay Module (farm.lua)
--- Features: Dynamic Lobby Gate, Late-Join Blinks, Throttled Re-targeting, Touch
+-- Features: Active Round-Player Checks, Dynamic Lobby Gate, Instant Touch
 -- =============================================================================
 
 local Farm = {}
@@ -100,14 +100,25 @@ local function isBagFull()
 end
 
 -- =============================================================================
--- DYNAMIC LOBBY SPATIAL DETECTOR
+-- DYNAMIC LOBBY & IN-ROUND SPATIAL DETECTORS
 -- =============================================================================
 local function isPlayerInLobby(hrp)
     -- Measures distance to our captured bootup spawn coordinates.
-    -- If within 120 studs of our lobby spawn, we are physically in the lobby.
     if not LobbyCFrame then return true end
     local dist = (hrp.Position - LobbyCFrame.Position).Magnitude
     return dist < 120
+end
+
+local function isPlayerInRound()
+    -- Evaluates if the local player is actively playing in the round.
+    -- In MM2, the 'Game' HUD frame is ONLY visible if you are playing.
+    local playGui = LocalPlayer:FindFirstChild("PlayerGui")
+    local mainGui = playGui and playGui:FindFirstChild("MainGUI")
+    local gameFrame = mainGui and mainGui:FindFirstChild("Game")
+    if gameFrame then
+        return gameFrame.Visible == true
+    end
+    return false
 end
 
 -- =============================================================================
@@ -286,7 +297,9 @@ function Farm.start()
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
 
-            if not hrp or not hum or hum.Health <= 0 then
+            -- Safety Gate: Only allow farming logic if we are actively playing in the round!
+            -- If we are spectating or dead, wait patiently.
+            if not hrp or not hum or hum.Health <= 0 or not isPlayerInRound() then
                 if CurrentTween then
                     pcall(function() CurrentTween:Cancel() CurrentTween:Destroy() end)
                     CurrentTween = nil
@@ -316,7 +329,7 @@ function Farm.start()
 
             local coins = getCoins()
             
-            -- If no coins exist on the map, we are NOT in a round (Intermission/Lobby)
+            -- If no coins exist on the map, we are NOT in a active farming round
             if #coins == 0 then
                 if CurrentTween then
                     pcall(function() CurrentTween:Cancel() CurrentTween:Destroy() end)
@@ -329,15 +342,14 @@ function Farm.start()
             end
 
             -- LATE-JOIN TELEPORTATION RECOVERY:
-            -- If coins exist on the map (round is active) but our bot is physically in the lobby,
-            -- instantly teleport (blink) them onto the map so they don't slowly fly across the skybox!
+            -- If we are in the lobby, but the game GUI says we are actively in-game (and coins exist),
+            -- instantly blink onto the map so we don't slowly fly across the skybox!
             if isPlayerInLobby(hrp) then
                 print("[Farm] Active round detected while bot is in lobby. Teleporting onto map...")
                 pcall(function()
-                    -- Teleport safely above the first detected active coin
                     hrp.CFrame = coins[1].CFrame + Vector3.new(0, 5, 0)
                 end)
-                task.wait(0.5) -- Allow physics and positions to register
+                task.wait(0.5)
                 continue
             end
 
@@ -388,7 +400,7 @@ function Farm.start()
                 local startTime = tick()
                 local nextRetargetCheck = tick() + 0.15 -- Run check at 6.6Hz to completely eliminate CPU spikes!
                 
-                while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and IsFarming and not isPlayerInLobby(hrp) do
+                while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and IsFarming and not isPlayerInLobby(hrp) and isPlayerInRound() do
                     if farmPlatform and farmPlatform.Parent then
                         farmPlatform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
                     end
