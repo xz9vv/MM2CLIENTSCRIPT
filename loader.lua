@@ -1,13 +1,16 @@
 -- =============================================================================
 -- MM2CLIENTSCRIPT Bootstrapper (loader.lua)
 -- GitHub: xz9vv / MM2CLIENTSCRIPT
+-- Features: Automated Cache-Buster & Fail-Safe Imports
 -- =============================================================================
 
 local repo_url = "https://raw.githubusercontent.com/xz9vv/MM2CLIENTSCRIPT/main/modules/"
 
 -- Helper function to "import" modules dynamically from GitHub in memory
 local function import(module_name)
-    local url = repo_url .. module_name .. ".lua"
+    -- Appends a dynamic timestamp to bypass GitHub's aggressive 5-minute raw cache!
+    local cache_buster = "?nocache=" .. tostring(os.time())
+    local url = repo_url .. module_name .. ".lua" .. cache_buster
     
     -- 1. Fetch raw code from GitHub
     local fetch_success, content = pcall(function()
