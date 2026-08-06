@@ -274,6 +274,9 @@ function Connection.start()
     ActiveSocket = socket
     print("[Connection] Successfully connected to Python backend!")
 
+    -- Mount connection globally so external modules can find it
+    shared.Connection = Connection
+
     -- 1. Fire Handshake immediately
     Connection.send({
         ["event"] = "joined",
