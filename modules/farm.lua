@@ -23,10 +23,12 @@ local forceScatterPivot = false
 local scatterPivotSource = nil
 local CurrentCoins = 0
 local LastStatus = "Alive"
+local CurrentRoundPhase = "Lobby"
 
--- Platform & Container Caches
+-- Platform, Tween, & Container Caches
 local farmPlatform = nil
 local cachedCoinContainer = nil
+local CurrentTween = nil
 
 -- =============================================================================
 -- WORKSPACE PATHFINDING COIN SCANNER
@@ -189,7 +191,6 @@ function Farm.forceReset()
 end
 
 function Farm.fling()
-    -- Aggressive downward void flinger targeting the public Murderer
     local targetPlayer = getPublicMurderer()
     if not targetPlayer then return end
 
@@ -210,7 +211,6 @@ function Farm.fling()
                 break
             end
 
-            -- Terminate fling if target falls into the void already
             if mHRP.Position.Y < -20 then break end
 
             setNoclip(true)
@@ -220,17 +220,14 @@ function Farm.fling()
                 hrp.CustomPhysicalProperties = desiredPhysics
             end
 
-            -- Apply spinning physics and downward velocity
             hrp.AssemblyAngularVelocity = Vector3.new(0, 999999, 0)
             hrp.AssemblyLinearVelocity = Vector3.new(0, -2500, 0)
 
-            -- Snap slightly above the murderer's root part to slam them downward
             hrp.CFrame = mHRP.CFrame * CFrame.new(math.random(-50, 50)/100, 2.5, math.random(-50, 50)/100)
             
             RunService.Heartbeat:Wait()
         end
 
-        -- Clean resets
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -245,9 +242,19 @@ end
 function Farm.applySettings(settings)
     if settings.farm_enabled ~= nil then 
         IsFarming = settings.farm_enabled 
-        -- Trigger master loop state
         if IsFarming then
             Farm.start()
+        else
+            -- Cleanly abort any active tweens immediately if farm is toggled off
+            if CurrentTween then
+                pcall(function() 
+                    CurrentTween:Cancel() 
+                    CurrentTween:Destroy() 
+                end)
+                CurrentTween = nil
+            end
+            destroyFarmPlatform()
+            setNoclip(false)
         end
     end
     if settings.tween_speed ~= nil then TweenSpeed = settings.tween_speed end
@@ -264,7 +271,7 @@ function Farm.start()
     activeFarmingLoop = true
 
     task.spawn(function()
-        while IsFarming and Cache.Connections["CoinFarmActive"] do
+        while IsFarming do
             task.wait(0.01)
 
             local char = LocalPlayer.Character
@@ -272,6 +279,10 @@ function Farm.start()
             local hum = char and char:FindFirstChildOfClass("Humanoid")
 
             if not hrp or not hum or hum.Health <= 0 then
+                if CurrentTween then
+                    pcall(function() CurrentTween:Cancel() CurrentTween:Destroy() end)
+                    CurrentTween = nil
+                end
                 destroyFarmPlatform()
                 setNoclip(false)
                 task.wait(0.5)
@@ -281,9 +292,12 @@ function Farm.start()
             -- Stop and exit back to lobby if the bag is full
             local full = isBagFull()
             if full then
+                if CurrentTween then
+                    pcall(function() CurrentTween:Cancel() CurrentTween:Destroy() end)
+                    CurrentTween = nil
+                end
                 destroyFarmPlatform()
                 setNoclip(false)
-                -- Safely teleport back to lobby coordinates
                 local lobbySpawn = Workspace:FindFirstChild("Lobby") and Workspace.Lobby:FindFirstChild("Spawn")
                 if lobbySpawn then
                     hrp.CFrame = lobbySpawn.CFrame + Vector3.new(0, 3, 0)
@@ -302,7 +316,7 @@ function Farm.start()
                 continue
             end
 
-            -- Locate nearest active coin that isn't blacklisted
+            -- Locate nearest active coin
             local closestCoin = nil
             local minDistance = math.huge
 
@@ -323,12 +337,11 @@ function Farm.start()
                 local targetCFrame = closestCoin.CFrame + Vector3.new(0, YOffset, 0)
                 local duration = minDistance / math.clamp(TweenSpeed, 10, 100)
 
-                -- Temporarily blacklist to avoid double target collisions
                 BlacklistedCoins[closestCoin] = tick() + duration + 1.5
 
                 local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
-                local currentTween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
-                currentTween:Play()
+                CurrentTween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
+                CurrentTween:Play()
 
                 local startTime = tick()
                 while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and IsFarming do
@@ -340,8 +353,7 @@ function Farm.start()
                     local currentDist = (hrp.Position - closestCoin.Position).Magnitude
                     if currentDist <= 1.5 then
                         pcall(function()
-                            currentTween:Cancel()
-                            -- Instantly touch the coin transmitter
+                            CurrentTween:Cancel()
                             if firetouchinterest then
                                 firetouchinterest(hrp, closestCoin, 0)
                                 task.wait()
@@ -353,7 +365,10 @@ function Farm.start()
                     RunService.Heartbeat:Wait()
                 end
                 
-                pcall(function() currentTween:Destroy() end)
+                if CurrentTween then
+                    pcall(function() CurrentTween:Destroy() end)
+                    CurrentTween = nil
+                end
             end
         end
         destroyFarmPlatform()
@@ -408,6 +423,57 @@ task.spawn(function()
                         ["event"] = "status_changed",
                         ["status"] = LastStatus
                     })
+                end
+            end
+        end)
+    end
+end)
+
+-- 3. Game State / Round Reset Listener
+task.spawn(function()
+    local lastPhase = ""
+    while true do
+        task.wait(1)
+        pcall(function()
+            local timerValue = ReplicatedStorage:FindFirstChild("Timer")
+            local statusValue = ReplicatedStorage:FindFirstChild("Status")
+            
+            if statusValue then
+                local currentText = statusValue.Value
+                local phase = "InGame"
+                local mapName = "Unknown"
+                
+                if currentText:match("Intermission") then
+                    phase = "Intermission"
+                elseif currentText:match("Voting") then
+                    phase = "Voting"
+                elseif currentText:match("ended") then
+                    phase = "Lobby"
+                end
+                
+                local mapFolder = Workspace:FindFirstChild("Normal") or Workspace:FindFirstChild("Sandbox")
+                if mapFolder and mapFolder:GetChildren()[1] then
+                    mapName = mapFolder:GetChildren()[1].Name
+                end
+
+                if phase ~= lastPhase then
+                    lastPhase = phase
+                    CurrentRoundPhase = phase
+                    
+                    if shared.Connection then
+                        shared.Connection.send({
+                            ["event"] = "round_state_changed",
+                            ["phase"] = phase,
+                            ["map"] = mapName
+                        })
+                    end
+                    
+                    if phase == "Lobby" then
+                        CurrentCoins = 0
+                        if shared.Connection then
+                            shared.Connection.send({["event"] = "round_ended"})
+                        end
+                    end
                 end
             end
         end)
