@@ -1,6 +1,6 @@
 -- =============================================================================
 -- MM2CLIENTSCRIPT: Farming & Gameplay Module (farm.lua)
--- Features: Stable Linear Tweens, 20-Stud Anti-Trail, Touch Interest, UI Gates
+-- Features: 3s/20-Coin Scatter, Stable Linear Tweens, Native Lobby Spawns
 -- =============================================================================
 
 local Farm = {}
@@ -12,6 +12,7 @@ local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LocalPlayer = Players.LocalPlayer
+local Username = LocalPlayer.Name
 
 -- Shared Global Settings (Synced from Python)
 local IsFarming = false
@@ -25,7 +26,9 @@ local CurrentCoins = 0
 local LastStatus = "Alive"
 local CurrentRoundPhase = "Lobby"
 
--- Caching Positions and Anchors
+-- Local Anti-Trail & Physics Trackers
+local TailgateTimer = 0
+local forceScatter = false
 local farmPlatform = nil
 local cachedCoinContainer = nil
 local CurrentTween = nil
@@ -99,10 +102,47 @@ local function isBagFull()
 end
 
 -- =============================================================================
--- DYNAMIC IN-ROUND SPATIAL DETECTORS
+-- DYNAMIC LOBBY & IN-ROUND SPATIAL DETECTORS (Dark Dex Assisted)
 -- =============================================================================
+
+local function teleportToLobby(hrp)
+    -- Safe recursive lookup for workspace.Lobby SpawnLocation
+    local lobby = Workspace:FindFirstChild("Lobby")
+    if lobby then
+        local spawnPart = lobby:FindFirstChild("Spawn", true) 
+                          or lobby:FindFirstChild("SpawnLocation", true) 
+                          or lobby:FindFirstChildOfClass("SpawnLocation", true)
+        
+        if spawnPart and spawnPart:IsA("BasePart") then
+            hrp.CFrame = spawnPart.CFrame + Vector3.new(0, 3, 0)
+            return true
+        end
+        -- Fallback: Teleport directly to center of Lobby model
+        if lobby:IsA("Model") and lobby.PrimaryPart then
+            hrp.CFrame = lobby.PrimaryPart.CFrame + Vector3.new(0, 3, 0)
+            return true
+        elseif lobby:IsA("BasePart") then
+            hrp.CFrame = lobby.CFrame + Vector3.new(0, 3, 0)
+            return true
+        end
+    end
+    return false
+end
+
+local function isPlayerInLobby(hrp)
+    -- Measures distance to the Lobby Spawn Location part in workspace
+    local lobby = Workspace:FindFirstChild("Lobby")
+    if lobby then
+        local spawnPart = lobby:FindFirstChild("Spawn", true) or lobby:FindFirstChild("SpawnLocation", true)
+        if spawnPart and spawnPart:IsA("BasePart") then
+            local dist = (hrp.Position - spawnPart.Position).Magnitude
+            return dist < 120
+        end
+    end
+    return true -- Default to true if Lobby folder isn't found
+end
+
 local function isPlayerInRound()
-    -- Double-Guarded In-Game verification
     local playGui = LocalPlayer:FindFirstChild("PlayerGui")
     local mainGui = playGui and playGui:FindFirstChild("MainGUI")
     local gameFrame = mainGui and mainGui:FindFirstChild("Game")
@@ -110,6 +150,7 @@ local function isPlayerInRound()
     if gameFrame then
         local roleLabel = gameFrame:FindFirstChild("Role", true)
         if roleLabel and roleLabel:IsA("TextLabel") then
+            -- Only count as in-game if the Main HUD is visible AND our role is loaded/assigned
             return gameFrame.Visible == true and roleLabel.Text ~= ""
         end
         return gameFrame.Visible == true
@@ -208,6 +249,25 @@ function Farm.forceReset()
     end
 end
 
+function Farm.applySettings(settings)
+    if settings.farm_enabled ~= nil then 
+        IsFarming = settings.farm_enabled 
+        if IsFarming then
+            Farm.start()
+        else
+            if CurrentTween then
+                pcall(function() CurrentTween:Cancel() CurrentTween:Destroy() end)
+                CurrentTween = nil
+            end
+            destroyFarmPlatform()
+            setNoclip(false)
+        end
+    end
+    if settings.tween_speed ~= nil then TweenSpeed = settings.tween_speed end
+    if settings.offset ~= nil then YOffset = settings.offset end
+    if settings.squad_members ~= nil then SquadMembers = settings.squad_members end
+end
+
 function Farm.fling()
     local targetPlayer = getPublicMurderer()
     if not targetPlayer then return end
@@ -257,25 +317,6 @@ function Farm.fling()
     end)
 end
 
-function Farm.applySettings(settings)
-    if settings.farm_enabled ~= nil then 
-        IsFarming = settings.farm_enabled 
-        if IsFarming then
-            Farm.start()
-        else
-            if CurrentTween then
-                pcall(function() CurrentTween:Cancel() CurrentTween:Destroy() end)
-                CurrentTween = nil
-            end
-            destroyFarmPlatform()
-            setNoclip(false)
-        end
-    end
-    if settings.tween_speed ~= nil then TweenSpeed = settings.tween_speed end
-    if settings.offset ~= nil then YOffset = settings.offset end
-    if settings.squad_members ~= nil then SquadMembers = settings.squad_members end
-end
-
 -- =============================================================================
 -- STABLE LINEAR AUTO-FARMING ENGINE (One-Tween-At-A-Time)
 -- =============================================================================
@@ -293,8 +334,8 @@ function Farm.start()
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
 
-            -- Safety Gate: Only allow farming if we are alive and actively playing the round
-            if not hrp or not hum or hum.Health <= 0 or not isPlayerInRound() then
+            -- Safety Gate: Only allow farming if we are alive, and actively playing inside the round
+            if not hrp or not hum or hum.Health <= 0 or not isPlayerInRound() or isPlayerInLobby(hrp) then
                 if CurrentTween then
                     pcall(function() CurrentTween:Cancel() CurrentTween:Destroy() end)
                     CurrentTween = nil
@@ -305,7 +346,7 @@ function Farm.start()
                 continue
             end
 
-            -- Stop farming cleanly upon reaching capacity (No teleportation, just wait)
+            -- Stop farming and teleport back to Spawn if bag is full
             local full = isBagFull()
             if full then
                 if CurrentTween then
@@ -314,17 +355,16 @@ function Farm.start()
                 end
                 destroyFarmPlatform()
                 setNoclip(false)
+                
+                # Teleport directly back to the Lobby Spawn part
+                teleportToLobby(hrp)
                 task.wait(1)
                 continue
             end
 
-            setNoclip(true)
-            local platform = createFarmPlatform()
-            platform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
-
             local coins = getCoins()
             
-            -- If no coins exist on the map, we are NOT in an active round
+            -- If no coins exist on the map, we are NOT in an active round (Intermission / Lobby / 10s Timer)
             if #coins == 0 then
                 if CurrentTween then
                     pcall(function() CurrentTween:Cancel() CurrentTween:Destroy() end)
@@ -336,39 +376,76 @@ function Farm.start()
                 continue
             end
 
-            -- Locate nearest active coin
-            local closestCoin = nil
-            local minDistance = math.huge
+            -- =================================================================
+            -- 🛰️ 3-SECOND COOPERATIVE SQUAD TAILGATE DETECTOR (Anti-trail)
+            -- =================================================================
+            local is_tailgating = false
+            local our_rank = table.find(SquadMembers, Username) or 1
 
-            for _, coin in ipairs(coins) do
-                if coin and coin:IsA("BasePart") and coin.Parent then
-                    local blacklisted = BlacklistedCoins[coin]
-                    if not blacklisted or tick() >= blacklisted then
-                        local dist = (hrp.Position - coin.Position).Magnitude
-                        
-                        -- Anti-trail/Scatter checking: Ignore coin if another squad member is within 20 studs of it
-                        local too_close_to_bot = false
-                        for _, p in ipairs(Players:GetPlayers()) do
-                            if p ~= LocalPlayer and table.find(SquadMembers, p.Name) and p.Character then
-                                local bHRP = p.Character:FindFirstChild("HumanoidRootPart")
-                                if bHRP and (bHRP.Position - coin.Position).Magnitude < 20 then -- 20-Stud Gate
-                                    too_close_to_bot = true
-                                    break
-                                end
+            for _, name in ipairs(SquadMembers) do
+                if name ~= Username then
+                    local other_player = Players:FindFirstChild(name)
+                    local other_char = other_player and other_player.Character
+                    local other_hrp = other_char and other_char:FindFirstChild("HumanoidRootPart")
+                    
+                    if other_hrp then
+                        local dist_to_bot = (hrp.Position - other_hrp.Position).Magnitude
+                        if dist_to_bot < 8 then
+                            local other_rank = table.find(SquadMembers, name) or 1
+                            -- To prevent both bots scattering at once, only the bot with the lower rank (higher index) scatters!
+                            if our_rank > other_rank then
+                                is_tailgating = true
+                                break
                             end
-                        end
-                        
-                        if not too_close_to_bot and dist < minDistance then
-                            minDistance = dist
-                            closestCoin = coin
                         end
                     end
                 end
             end
 
+            if is_tailgating then
+                TailgateTimer = TailgateTimer + 0.01
+                if TailgateTimer >= 3.0 then -- 3 continuous seconds of clumping
+                    forceScatter = true
+                    TailgateTimer = 0
+                    print("[Farm] Tailgating detected for 3s. Activating 20-coin scatter skip!")
+                end
+            else
+                TailgateTimer = 0
+            end
+
+            -- =================================================================
+            -- NEAREST-COIN RESOLVER (With 20-Coin Scatter Support)
+            -- =================================================================
+            local coins_list = {}
+            for _, coin in ipairs(coins) do
+                if coin and coin:IsA("BasePart") and coin.Parent then
+                    local blacklisted = BlacklistedCoins[coin]
+                    if not blacklisted or tick() >= blacklisted then
+                        local dist = (hrp.Position - coin.Position).Magnitude
+                        table.insert(coins_list, {coin = coin, dist = dist})
+                    end
+                end
+            end
+
+            -- Sort all active coins on the map by distance
+            table.sort(coins_list, function(a, b) return a.dist < b.dist end)
+
+            local closestCoin = nil
+            if #coins_list > 0 then
+                if forceScatter then
+                    -- anti-trail scatter: Skip the closest 20 coins, and target the 21st (or furthest available)
+                    local target_idx = math.min(21, #coins_list)
+                    closestCoin = coins_list[target_idx].coin
+                    forceScatter = false
+                    print("[Farm] Scattered successfully to coin index: " .. tostring(target_idx))
+                else
+                    closestCoin = coins_list[1].coin
+                end
+            end
+
             if closestCoin then
                 local targetCFrame = closestCoin.CFrame + Vector3.new(0, YOffset, 0)
-                local duration = minDistance / math.clamp(TweenSpeed, 10, 100)
+                local duration = (hrp.Position - targetCFrame.Position).Magnitude / math.clamp(TweenSpeed, 10, 100)
 
                 BlacklistedCoins[closestCoin] = tick() + duration + 1.5
 
@@ -378,15 +455,15 @@ function Farm.start()
 
                 local startTime = tick()
                 
-                -- STABLE LINEAR PROGRESSION: Locks onto the target and moves in a single, smooth line.
-                while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and IsFarming and isPlayerInRound() do
+                -- STABLE LINEAR PROGRESSION
+                while (tick() - startTime) < duration and closestCoin and closestCoin.Parent and hum.Health > 0 and IsFarming and isPlayerInRound() and not isPlayerInLobby(hrp) do
                     if farmPlatform and farmPlatform.Parent then
                         farmPlatform.CFrame = hrp.CFrame * CFrame.new(0, -3.5, 0)
                     end
 
                     local currentDist = (hrp.Position - closestCoin.Position).Magnitude
                     
-                    -- Instant Touch Proximity Check (1.5 studs)
+                    -- Instant Touch Proximity Check
                     if currentDist <= 1.5 then
                         pcall(function()
                             CurrentTween:Cancel()
