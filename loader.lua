@@ -1,65 +1,101 @@
 -- =============================================================================
--- MM2CLIENTSCRIPT Bootstrapper (loader.lua)
--- GitHub: xz9vv / MM2CLIENTSCRIPT
--- Features: Automated Cache-Buster & Fail-Safe Imports
+-- MM2CLIENTSCRIPT: Optimized Asynchronous Parallel Loader
+-- Features: Parallel Downloading, Non-Blocking Yields, Crash-Safe Compilation
 -- =============================================================================
 
-local repo_url = "https://raw.githubusercontent.com/xz9vv/MM2CLIENTSCRIPT/main/modules/"
+local HttpService = game:GetService("HttpService")
 
--- Helper function to "import" modules dynamically from GitHub in memory
-local function import(module_name)
-    -- Appends a dynamic timestamp to bypass GitHub's aggressive 5-minute raw cache!
-    local cache_buster = "?nocache=" .. tostring(os.time())
-    local url = repo_url .. module_name .. ".lua" .. cache_buster
-    
-    -- 1. Fetch raw code from GitHub
-    local fetch_success, content = pcall(function()
-        return game:HttpGet(url)
+-- !!! CHANGE THESE TO MATCH YOUR GITHUB DETAILS !!!
+local GITHUB_USERNAME = "YourUsername"
+local GITHUB_REPO = "YourRepoName"
+local GITHUB_BRANCH = "main"
+
+local BASE_URL = "https://raw.githubusercontent.com/" .. GITHUB_USERNAME .. "/" .. GITHUB_REPO .. "/" .. GITHUB_BRANCH .. "/"
+
+local ModulePaths = {
+    Optimizations = "modules/optimizations.lua",
+    Connection    = "modules/connection.lua",
+    ESP           = "modules/esp.lua",
+    Farm          = "modules/farm.lua",
+    Unbox         = "modules/unbox.lua"
+}
+
+local downloadedCode = {}
+local finishedCount = 0
+local totalFiles = 5
+
+print("[Loader] Initiating parallel download sequence...")
+
+-- Helper to safely download files in parallel threads
+local function downloadParallel(moduleName, repoPath)
+    task.spawn(function()
+        local fileURL = BASE_URL .. repoPath
+        local success, code = pcall(function()
+            return game:HttpGet(fileURL)
+        end)
+        
+        if success and code and #code > 0 then
+            downloadedCode[moduleName] = code
+        else
+            warn("[Loader] Failed to download module: " .. moduleName)
+        end
+        
+        finishedCount = finishedCount + 1
     end)
-    
-    if not fetch_success or not content then
-        warn("[Loader] Failed to download module: " .. module_name .. " (Verify repository is Public)")
-        return nil
-    end
-    
-    -- 2. Compile raw code into executable function
-    local func, compile_error = loadstring(content)
-    if not func then
-        warn("[Loader] Syntax Error in " .. module_name .. ": " .. tostring(compile_error))
-        return nil
-    end
-    
-    -- 3. Execute compilation safely to extract return table
-    local run_success, result = pcall(func)
-    if not run_success then
-        warn("[Loader] Runtime Error inside " .. module_name .. ": " .. tostring(result))
-        return nil
-    end
-    
-    print("[Loader] Successfully imported module: " .. module_name)
-    return result
 end
 
--- Import all modules (Each returns a clean table of functions)
-local Connection    = import("connection")
-local Optimizations = import("optimizations")
-local Farm          = import("farm")
-local ESP           = import("esp")
-local Unbox         = import("unbox")
+-- Fire off all 5 downloads simultaneously
+for name, path in pairs(ModulePaths) do
+    downloadParallel(name, path)
+end
 
--- Verify all core modules loaded correctly before launching
-if Connection and Optimizations and Farm and ESP and Unbox then
-    -- Share module tables globally inside the script's environment so they can call each other
-    shared.Connection    = Connection
-    shared.Optimizations = Optimizations
-    shared.Farm          = Farm
-    shared.ESP           = ESP
-    shared.Unbox         = Unbox
+-- Non-blocking yield loop (keeps game running smoothly while downloading)
+while finishedCount < totalFiles do
+    task.wait(0.1)
+end
 
-    -- Initialize modules
-    Connection.start()
-    Optimizations.init()
-    print("[MM2CLIENTSCRIPT] All modules successfully loaded and initialized!")
+print("[Loader] All modules downloaded. Compiling safely...")
+
+-- 1. Compile Optimizations
+if downloadedCode.Optimizations then
+    local success, func = pcall(loadstring, downloadedCode.Optimizations)
+    if success and func then pcall(func) end
+end
+
+-- 2. Compile Connection (and capture its return value to start it)
+local ConnectionModule = nil
+if downloadedCode.Connection then
+    local compileSuccess, func = pcall(loadstring, downloadedCode.Connection)
+    if compileSuccess and func then
+        local runSuccess, returnedModule = pcall(func)
+        if runSuccess then
+            ConnectionModule = returnedModule
+        end
+    end
+end
+
+-- 3. Compile ESP
+if downloadedCode.ESP then
+    local success, func = pcall(loadstring, downloadedCode.ESP)
+    if success and func then pcall(func) end
+end
+
+-- 4. Compile Farm
+if downloadedCode.Farm then
+    local success, func = pcall(loadstring, downloadedCode.Farm)
+    if success and func then pcall(func) end
+end
+
+-- 5. Compile Unbox
+if downloadedCode.Unbox then
+    local success, func = pcall(loadstring, downloadedCode.Unbox)
+    if success and func then pcall(func) end
+end
+
+-- Initialize Connection
+if ConnectionModule and ConnectionModule.start then
+    ConnectionModule.start()
+    print("[Loader] Active. Connected modules successfully initialized.")
 else
-    warn("[MM2CLIENTSCRIPT] Startup aborted: One or more critical modules failed to import.")
+    warn("[Loader] Critical Failure: Connection module failed to initialize.")
 end
