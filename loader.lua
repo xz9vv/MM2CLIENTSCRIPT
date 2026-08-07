@@ -1,6 +1,6 @@
 -- =============================================================================
--- MM2CLIENTSCRIPT: Optimized Asynchronous Parallel Loader
--- Features: Parallel Downloading, Non-Blocking Yields, Crash-Safe Compilation
+-- MM2CLIENTSCRIPT: Optimized Asynchronous Parallel Loader (V2)
+-- Features: Parallel Downloading, Safe Compilation, Shared Memory Mounting
 -- =============================================================================
 
 local HttpService = game:GetService("HttpService")
@@ -54,42 +54,68 @@ while finishedCount < totalFiles do
     task.wait(0.1)
 end
 
-print("[Loader] All modules downloaded. Compiling safely...")
+print("[Loader] All modules downloaded. Compiling and mounting to shared memory...")
 
--- 1. Compile Optimizations
+-- 1. Compile Optimizations and mount to shared.Optimizations
 if downloadedCode.Optimizations then
     local success, func = pcall(loadstring, downloadedCode.Optimizations)
-    if success and func then pcall(func) end
+    if success and func then
+        local runSuccess, returnedModule = pcall(func)
+        if runSuccess and returnedModule then
+            shared.Optimizations = returnedModule
+            print("[Loader] Mounted Optimizations to shared.")
+        end
+    end
 end
 
--- 2. Compile Connection (and capture its return value to start it)
+-- 2. Compile Connection and capture its return value to start it
 local ConnectionModule = nil
 if downloadedCode.Connection then
     local compileSuccess, func = pcall(loadstring, downloadedCode.Connection)
     if compileSuccess and func then
         local runSuccess, returnedModule = pcall(func)
-        if runSuccess then
+        if runSuccess and returnedModule then
             ConnectionModule = returnedModule
+            shared.Connection = returnedModule
+            print("[Loader] Mounted Connection to shared.")
         end
     end
 end
 
--- 3. Compile ESP
+-- 3. Compile ESP and mount to shared.ESP
 if downloadedCode.ESP then
     local success, func = pcall(loadstring, downloadedCode.ESP)
-    if success and func then pcall(func) end
+    if success and func then
+        local runSuccess, returnedModule = pcall(func)
+        if runSuccess and returnedModule then
+            shared.ESP = returnedModule
+            print("[Loader] Mounted ESP to shared.")
+        end
+    end
 end
 
--- 4. Compile Farm
+-- 4. Compile Farm and mount to shared.Farm
 if downloadedCode.Farm then
     local success, func = pcall(loadstring, downloadedCode.Farm)
-    if success and func then pcall(func) end
+    if success and func then
+        local runSuccess, returnedModule = pcall(func)
+        if runSuccess and returnedModule then
+            shared.Farm = returnedModule
+            print("[Loader] Mounted Farm to shared.")
+        end
+    end
 end
 
--- 5. Compile Unbox
+-- 5. Compile Unbox and mount to shared.Unbox
 if downloadedCode.Unbox then
     local success, func = pcall(loadstring, downloadedCode.Unbox)
-    if success and func then pcall(func) end
+    if success and func then
+        local runSuccess, returnedModule = pcall(func)
+        if runSuccess and returnedModule then
+            shared.Unbox = returnedModule
+            print("[Loader] Mounted Unbox to shared.")
+        end
+    end
 end
 
 -- Initialize Connection
