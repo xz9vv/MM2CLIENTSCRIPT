@@ -5,9 +5,9 @@
 
 local HttpService = game:GetService("HttpService")
 
--- !!! CHANGE THESE TO MATCH YOUR GITHUB DETAILS !!!
-local GITHUB_USERNAME = "YourUsername"
-local GITHUB_REPO = "YourRepoName"
+-- Pre-configured to match your repository
+local GITHUB_USERNAME = "xz9vv"
+local GITHUB_REPO = "MM2CLIENTSCRIPT"
 local GITHUB_BRANCH = "main"
 
 local BASE_URL = "https://raw.githubusercontent.com/" .. GITHUB_USERNAME .. "/" .. GITHUB_REPO .. "/" .. GITHUB_BRANCH .. "/"
