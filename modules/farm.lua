@@ -29,6 +29,8 @@ local forceScatter = false
 local farmPlatform = nil
 local cachedCoinContainer = nil
 local CurrentTween = nil
+local NoclipConnection = nil
+local IsFlinging = false -- State guard to prevent loop conflicts
 
 -- Made public so connection.lua can zero it on round resets
 Farm.CurrentCoins = 0
@@ -135,7 +137,7 @@ end
 local function isPlayerInRound()
     -- True indicator: Active map exists in Workspace
     local MapWhitelist = {
-        "bank2", "biolabsq", "biolab", "factory", "hospital3", "hospital3icon", 
+        "bank2", "hotel", "biolabsq", "biolab", "factory", "hospital3", "hospital3icon", 
         "hotel2", "house2", "mansion2", "milbase", "office3", "office3icon", 
         "policestation", "policestationicon", "research", "researchfacility", "workplace",
         "beachresort", "yacht", "yachtmap", "pier", "piermap", "manor", "farmhouse", 
@@ -158,17 +160,36 @@ end
 -- PHYSICS PLATFORM & NOCLIP UTILITIES
 -- =============================================================================
 
-local function setNoclip(state)
-    task.spawn(function()
+local function startNoclip()
+    if NoclipConnection then return end
+    NoclipConnection = RunService.Stepped:Connect(function()
         local char = LocalPlayer.Character
         if char then
             for _, child in ipairs(char:GetDescendants()) do
                 if child:IsA("BasePart") then
-                    child.CanCollide = not state
+                    child.CanCollide = false
                 end
             end
         end
     end)
+end
+
+local function stopNoclip()
+    if NoclipConnection then
+        NoclipConnection:Disconnect()
+        NoclipConnection = nil
+    end
+    -- Reset standard collisions once on stop
+    local char = LocalPlayer.Character
+    if char then
+        for _, child in ipairs(char:GetDescendants()) do
+            if child:IsA("BasePart") then
+                if child.Name ~= "HumanoidRootPart" then
+                    child.CanCollide = true
+                end
+            end
+        end
+    end
 end
 
 local function createFarmPlatform()
@@ -256,7 +277,7 @@ function Farm.applySettings(settings)
                 CurrentTween = nil
             end
             destroyFarmPlatform()
-            setNoclip(false)
+            stopNoclip()
         end
     end
     if settings.tween_speed ~= nil then TweenSpeed = settings.tween_speed end
@@ -267,6 +288,9 @@ end
 function Farm.fling(targetPlayerName)
     local targetPlayer = Players:FindFirstChild(targetPlayerName) or getPublicMurderer()
     if not targetPlayer then return end
+
+    -- Flag active fling state to disable background loop interference
+    IsFlinging = true
 
     task.spawn(function()
         local desiredPhysics = PhysicalProperties.new(100, 0.3, 0.5)
@@ -287,7 +311,7 @@ function Farm.fling(targetPlayerName)
 
             if mHRP.Position.Y < -20 then break end
 
-            setNoclip(true)
+            startNoclip()
             hum.PlatformStand = true
 
             if hrp.CustomPhysicalProperties ~= desiredPhysics then
@@ -310,6 +334,9 @@ function Farm.fling(targetPlayerName)
             hrp.AssemblyAngularVelocity = Vector3.new(0,0,0)
             hrp.AssemblyLinearVelocity = Vector3.new(0,0,0)
         end
+        stopNoclip()
+        
+        IsFlinging = false -- Resume normal farming loop handling
     end)
 end
 
@@ -326,6 +353,12 @@ function Farm.start()
         while IsFarming do
             task.wait(0.01)
 
+            -- Completely bypass and pause normal loop features if we are actively flinging
+            if IsFlinging then
+                task.wait(0.5)
+                continue
+            end
+
             local char = LocalPlayer.Character
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -337,7 +370,8 @@ function Farm.start()
                     CurrentTween = nil
                 end
                 destroyFarmPlatform()
-                setNoclip(false)
+                stopNoclip()
+                if hum then hum.PlatformStand = false end
                 task.wait(0.5)
                 continue
             end
@@ -353,7 +387,8 @@ function Farm.start()
                     CurrentTween = nil
                 end
                 destroyFarmPlatform()
-                setNoclip(false)
+                stopNoclip()
+                if hum then hum.PlatformStand = false end
                 
                 -- Teleport directly back to the Lobby Spawn part
                 teleportToLobby(hrp)
@@ -370,7 +405,8 @@ function Farm.start()
                     CurrentTween = nil
                 end
                 destroyFarmPlatform()
-                setNoclip(false)
+                stopNoclip()
+                if hum then hum.PlatformStand = false end
                 task.wait(0.5)
                 continue
             end
